@@ -18,7 +18,6 @@
 package org.apache.spark.sql.columnar
 
 import java.nio.ByteBuffer
-import java.sql.{Date, Timestamp}
 
 import scala.reflect.runtime.universe.TypeTag
 
@@ -26,6 +25,7 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.expressions.MutableRow
 import org.apache.spark.sql.execution.SparkSqlSerializer
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
 /**
  * An abstract class that represents type of a column. Used to append/extract Java objects into/from
@@ -101,16 +101,16 @@ private[sql] sealed abstract class ColumnType[T <: DataType, JvmType](
   override def toString: String = getClass.getSimpleName.stripSuffix("$")
 }
 
-private[sql] abstract class NativeColumnType[T <: NativeType](
+private[sql] abstract class NativeColumnType[T <: AtomicType](
     val dataType: T,
     typeId: Int,
     defaultSize: Int)
-  extends ColumnType[T, T#JvmType](typeId, defaultSize) {
+  extends ColumnType[T, T#InternalType](typeId, defaultSize) {
 
   /**
    * Scala TypeTag. Can be used to create primitive arrays and hash tables.
    */
-  def scalaTag: TypeTag[dataType.JvmType] = dataType.tag
+  def scalaTag: TypeTag[dataType.InternalType] = dataType.tag
 }
 
 private[sql] object INT extends NativeColumnType(IntegerType, 0, 4) {
@@ -312,26 +312,28 @@ private[sql] object STRING extends NativeColumnType(StringType, 7, 8) {
     row.getString(ordinal).getBytes("utf-8").length + 4
   }
 
-  override def append(v: String, buffer: ByteBuffer): Unit = {
-    val stringBytes = v.getBytes("utf-8")
+  override def append(v: UTF8String, buffer: ByteBuffer): Unit = {
+    val stringBytes = v.getBytes
     buffer.putInt(stringBytes.length).put(stringBytes, 0, stringBytes.length)
   }
 
-  override def extract(buffer: ByteBuffer): String = {
+  override def extract(buffer: ByteBuffer): UTF8String = {
     val length = buffer.getInt()
     val stringBytes = new Array[Byte](length)
     buffer.get(stringBytes, 0, length)
-    new String(stringBytes, "utf-8")
+    UTF8String.fromBytes(stringBytes)
   }
 
-  override def setField(row: MutableRow, ordinal: Int, value: String): Unit = {
-    row.setString(ordinal, value)
+  override def setField(row: MutableRow, ordinal: Int, value: UTF8String): Unit = {
+    row.update(ordinal, value)
   }
 
-  override def getField(row: Row, ordinal: Int): String = row.getString(ordinal)
+  override def getField(row: Row, ordinal: Int): UTF8String = {
+    row(ordinal).asInstanceOf[UTF8String]
+  }
 
   override def copyField(from: Row, fromOrdinal: Int, to: MutableRow, toOrdinal: Int): Unit = {
-    to.setString(toOrdinal, from.getString(fromOrdinal))
+    to.update(toOrdinal, from(fromOrdinal))
   }
 }
 
@@ -353,22 +355,20 @@ private[sql] object DATE extends NativeColumnType(DateType, 8, 4) {
   }
 }
 
-private[sql] object TIMESTAMP extends NativeColumnType(TimestampType, 9, 12) {
-  override def extract(buffer: ByteBuffer): Timestamp = {
-    val timestamp = new Timestamp(buffer.getLong())
-    timestamp.setNanos(buffer.getInt())
-    timestamp
+private[sql] object TIMESTAMP extends NativeColumnType(TimestampType, 9, 8) {
+  override def extract(buffer: ByteBuffer): Long = {
+    buffer.getLong
   }
 
-  override def append(v: Timestamp, buffer: ByteBuffer): Unit = {
-    buffer.putLong(v.getTime).putInt(v.getNanos)
+  override def append(v: Long, buffer: ByteBuffer): Unit = {
+    buffer.putLong(v)
   }
 
-  override def getField(row: Row, ordinal: Int): Timestamp = {
-    row(ordinal).asInstanceOf[Timestamp]
+  override def getField(row: Row, ordinal: Int): Long = {
+    row(ordinal).asInstanceOf[Long]
   }
 
-  override def setField(row: MutableRow, ordinal: Int, value: Timestamp): Unit = {
+  override def setField(row: MutableRow, ordinal: Int, value: Long): Unit = {
     row(ordinal) = value
   }
 }

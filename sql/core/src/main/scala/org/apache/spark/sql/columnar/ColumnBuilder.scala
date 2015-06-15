@@ -18,8 +18,7 @@
 package org.apache.spark.sql.columnar
 
 import java.nio.{ByteBuffer, ByteOrder}
-
-import org.apache.spark.sql.Row
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.columnar.ColumnBuilder._
 import org.apache.spark.sql.columnar.compression.{AllCompressionSchemes, CompressibleColumnBuilder}
 import org.apache.spark.sql.types._
@@ -33,7 +32,7 @@ private[sql] trait ColumnBuilder {
   /**
    * Appends `row(ordinal)` to the column builder.
    */
-  def appendFrom(row: Row, ordinal: Int)
+  def appendFrom(row: InternalRow, ordinal: Int)
 
   /**
    * Column statistics information
@@ -68,7 +67,7 @@ private[sql] class BasicColumnBuilder[T <: DataType, JvmType](
     buffer.order(ByteOrder.nativeOrder()).putInt(columnType.typeId)
   }
 
-  override def appendFrom(row: Row, ordinal: Int): Unit = {
+  override def appendFrom(row: InternalRow, ordinal: Int): Unit = {
     buffer = ensureFreeSpace(buffer, columnType.actualSize(row, ordinal))
     columnType.append(row, ordinal, buffer)
   }
@@ -84,10 +83,10 @@ private[sql] abstract class ComplexColumnBuilder[T <: DataType, JvmType](
   extends BasicColumnBuilder[T, JvmType](columnStats, columnType)
   with NullableColumnBuilder
 
-private[sql] abstract class NativeColumnBuilder[T <: NativeType](
+private[sql] abstract class NativeColumnBuilder[T <: AtomicType](
     override val columnStats: ColumnStats,
     override val columnType: NativeColumnType[T])
-  extends BasicColumnBuilder[T, T#JvmType](columnStats, columnType)
+  extends BasicColumnBuilder[T, T#InternalType](columnStats, columnType)
   with NullableColumnBuilder
   with AllCompressionSchemes
   with CompressibleColumnBuilder[T]
@@ -153,6 +152,7 @@ private[sql] object ColumnBuilder {
     val builder: ColumnBuilder = dataType match {
       case IntegerType => new IntColumnBuilder
       case LongType => new LongColumnBuilder
+      case FloatType => new FloatColumnBuilder
       case DoubleType => new DoubleColumnBuilder
       case BooleanType => new BooleanColumnBuilder
       case ByteType => new ByteColumnBuilder
