@@ -29,7 +29,6 @@ def utf8_decoder(s):
     """ Decode the unicode as UTF-8 """
     return s and s.decode('utf-8')
 
-
 class KafkaUtils(object):
 
     @staticmethod
@@ -124,6 +123,45 @@ class KafkaUtils(object):
         ser = PairDeserializer(NoOpSerializer(), NoOpSerializer())
         stream = DStream(jstream, ssc, ser)
         return stream.map(lambda k_v: (keyDecoder(k_v[0]), valueDecoder(k_v[1])))
+
+    @staticmethod
+    def createDirectStreamJ(ssc, topics, kafkaParams, fromOffsets={},
+                           keyDecoder=utf8_decoder, valueDecoder=utf8_decoder):
+        """
+        FIXME: temporary working placeholder
+        """
+        if not isinstance(topics, list):
+            raise TypeError("topics should be list")
+        if not isinstance(kafkaParams, dict):
+            raise TypeError("kafkaParams should be dict")
+
+        try:
+            helperClass = ssc._jvm.java.lang.Thread.currentThread().getContextClassLoader() \
+                .loadClass("org.apache.spark.streaming.kafka.KafkaUtilsPythonHelper")
+            helper = helperClass.newInstance()
+
+            jfromOffsets = dict([(k._jTopicAndPartition(helper),
+                                  v) for (k, v) in fromOffsets.items()])
+            jstream = helper.createDirectStreamJ(ssc._jssc, kafkaParams, set(topics), jfromOffsets)
+        except Py4JJavaError as e:
+            if 'ClassNotFoundException' in str(e.java_exception):
+                KafkaUtils._printErrorMsg(ssc.sparkContext)
+            raise e
+
+        # we need to use a Deserializer for entries ((key, message), (topic, (partition, offset)))
+        ser = PairDeserializer(PairDeserializer(NoOpSerializer(), NoOpSerializer()),\
+                               PairDeserializer(NoOpSerializer(), \
+                                                PairDeserializer(NoOpSerializer(), NoOpSerializer()) 
+                                                ) 
+                               )
+        stream = DStream(jstream, ssc, ser)
+        def getMetadataAndDecode(jmsgAndMetadata):
+            return {"key" : keyDecoder(jmsgAndMetadata[0][0]),\
+                    "value" : valueDecoder(jmsgAndMetadata[0][1]),\
+                    "topic" : utf8_decoder(jmsgAndMetadata[1][0]), \
+                    "partition" : int(utf8_decoder(jmsgAndMetadata[1][1][0])), \
+                    "offset" : long(utf8_decoder(jmsgAndMetadata[1][1][1]))}            
+        return stream.map(getMetadataAndDecode)
 
     @staticmethod
     def createRDD(sc, kafkaParams, offsetRanges, leaders={},
@@ -244,3 +282,4 @@ class Broker(object):
 
     def _jBroker(self, helper):
         return helper.createBroker(self._host, self._port)
+

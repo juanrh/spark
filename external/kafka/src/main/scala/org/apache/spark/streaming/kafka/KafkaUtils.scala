@@ -705,6 +705,77 @@ private class KafkaUtilsPythonHelper {
     new JavaPairRDD(jrdd.rdd)
   }
 
+  // FIXME rename and refactor
+  /** Using this weird type due to the limited set of types
+  * supported by PythonRDD. This corresponds to 
+  *
+  * ((key, message), (topic, (partition, offset)))
+  *
+  * where the key and the message are encoded as Array[Byte], 
+  * and topic, partition and offset are encoded as String.
+  * Note we cannot even use triples because only pairs are supported
+  * (we get an exception "Unexpected element type class scala.Tuple3")
+  */
+  type PyKafkaMsgWrapper = ((Array[Byte], Array[Byte]), (String, (String, String)))
+
+  def createDirectStreamJ(
+      jssc: JavaStreamingContext,
+      kafkaParams: JMap[String, String],
+      topics: JSet[String],
+      fromOffsets: JMap[TopicAndPartition, JLong]
+    ): JavaInputDStream[PyKafkaMsgWrapper] = {
+
+    if (!fromOffsets.isEmpty) {
+      import scala.collection.JavaConversions._
+      val topicsFromOffsets = fromOffsets.keySet().map(_.topic)
+      if (topicsFromOffsets != topics.toSet) {
+        throw new IllegalStateException(s"The specified topics: ${topics.toSet.mkString(" ")} " +
+          s"do not equal to the topic from offsets: ${topicsFromOffsets.mkString(" ")}")
+      }
+    }
+
+    val messageHandler = new JFunction[MessageAndMetadata[Array[Byte], Array[Byte]],
+                                       PyKafkaMsgWrapper] {
+        def call(msgMeta: MessageAndMetadata[Array[Byte], Array[Byte]]): PyKafkaMsgWrapper = 
+          (
+            (msgMeta.key(), msgMeta.message()), 
+            (msgMeta.topic, 
+              (msgMeta.partition.toString, msgMeta.offset.toString)
+            )
+          )
+      }
+
+    if (fromOffsets.isEmpty) {
+      KafkaUtils.createDirectStream[Array[Byte], Array[Byte], DefaultDecoder, DefaultDecoder, PyKafkaMsgWrapper](
+        jssc,
+        classOf[Array[Byte]],
+        classOf[Array[Byte]],
+        classOf[DefaultDecoder],
+        classOf[DefaultDecoder],
+        classOf[PyKafkaMsgWrapper],
+        kafkaParams,
+        topics,
+        messageHandler) : JavaInputDStream[PyKafkaMsgWrapper] 
+    } else {
+      val jstream = KafkaUtils.createDirectStream[
+        Array[Byte],
+        Array[Byte],
+        DefaultDecoder,
+        DefaultDecoder,
+        PyKafkaMsgWrapper](
+          jssc,
+          classOf[Array[Byte]],
+          classOf[Array[Byte]],
+          classOf[DefaultDecoder],
+          classOf[DefaultDecoder],
+          classOf[PyKafkaMsgWrapper],
+          kafkaParams,
+          fromOffsets,
+          messageHandler)
+      new JavaInputDStream(jstream.inputDStream)
+    }
+  }
+
   def createDirectStream(
       jssc: JavaStreamingContext,
       kafkaParams: JMap[String, String],
