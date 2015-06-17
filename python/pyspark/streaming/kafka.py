@@ -16,11 +16,13 @@
 #
 
 from py4j.java_gateway import Py4JJavaError
+from collections import namedtuple
 
 from pyspark.rdd import RDD
 from pyspark.storagelevel import StorageLevel
 from pyspark.serializers import PairDeserializer, NoOpSerializer
 from pyspark.streaming import DStream
+
 
 __all__ = ['Broker', 'KafkaUtils', 'OffsetRange', 'TopicAndPartition', 'utf8_decoder']
 
@@ -28,6 +30,8 @@ __all__ = ['Broker', 'KafkaUtils', 'OffsetRange', 'TopicAndPartition', 'utf8_dec
 def utf8_decoder(s):
     """ Decode the unicode as UTF-8 """
     return s and s.decode('utf-8')
+
+_MessageAndMetadata = namedtuple("MessageAndMetadata", ["key", "value", "topic", "partition", "offset"])
 
 class KafkaUtils(object):
 
@@ -156,11 +160,22 @@ class KafkaUtils(object):
                                )
         stream = DStream(jstream, ssc, ser)
         def getMetadataAndDecode(jmsgAndMetadata):
+            # Note hardcoding class name as this is @staticmethod
+            # and not @classmethod
+            return _MessageAndMetadata(
+                    key = keyDecoder(jmsgAndMetadata[0][0]),
+                    value = valueDecoder(jmsgAndMetadata[0][1]),
+                    topic = utf8_decoder(jmsgAndMetadata[1][0]),
+                    partition = int(utf8_decoder(jmsgAndMetadata[1][1][0])), 
+                    offset = long(utf8_decoder(jmsgAndMetadata[1][1][1]))
+                   )
+            '''
             return {"key" : keyDecoder(jmsgAndMetadata[0][0]),\
                     "value" : valueDecoder(jmsgAndMetadata[0][1]),\
                     "topic" : utf8_decoder(jmsgAndMetadata[1][0]), \
                     "partition" : int(utf8_decoder(jmsgAndMetadata[1][1][0])), \
                     "offset" : long(utf8_decoder(jmsgAndMetadata[1][1][1]))}            
+            '''
         return stream.map(getMetadataAndDecode)
 
     @staticmethod
