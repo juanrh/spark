@@ -776,6 +776,108 @@ private class KafkaUtilsPythonHelper {
     }
   }
 
+  def createDirectStreamF[R](
+      jssc: JavaStreamingContext,
+      resultClass : Class[R], 
+      kafkaParams: JMap[String, String],
+      topics: JSet[String],
+      fromOffsets: JMap[TopicAndPartition, JLong], 
+      messageHandler :  JFunction[MessageAndMetadata[Array[Byte], Array[Byte]],R] 
+    ): JavaInputDStream[R] = {
+
+    if (!fromOffsets.isEmpty) {
+      import scala.collection.JavaConversions._
+      val topicsFromOffsets = fromOffsets.keySet().map(_.topic)
+      if (topicsFromOffsets != topics.toSet) {
+        throw new IllegalStateException(s"The specified topics: ${topics.toSet.mkString(" ")} " +
+          s"do not equal to the topic from offsets: ${topicsFromOffsets.mkString(" ")}")
+      }
+    }
+
+    implicit val resCmt : ClassTag[R] = ClassTag(resultClass)
+    if (fromOffsets.isEmpty) {
+      KafkaUtils.createDirectStream[Array[Byte], Array[Byte], DefaultDecoder, DefaultDecoder, R](
+        jssc,
+        classOf[Array[Byte]],
+        classOf[Array[Byte]],
+        classOf[DefaultDecoder],
+        classOf[DefaultDecoder],
+        resultClass,
+        kafkaParams,
+        topics,
+        messageHandler) : JavaInputDStream[R] 
+    } else {
+      val jstream = KafkaUtils.createDirectStream[
+        Array[Byte],
+        Array[Byte],
+        DefaultDecoder,
+        DefaultDecoder,
+        R](
+          jssc,
+          classOf[Array[Byte]],
+          classOf[Array[Byte]],
+          classOf[DefaultDecoder],
+          classOf[DefaultDecoder],
+          resultClass,
+          kafkaParams,
+          fromOffsets,
+          messageHandler)
+      new JavaInputDStream(jstream.inputDStream)
+    }
+  }
+
+  type RawMsgMeta = MessageAndMetadata[Array[Byte], Array[Byte]]
+  def createDirectStreamMM(
+      jssc: JavaStreamingContext,
+      kafkaParams: JMap[String, String],
+      topics: JSet[String],
+      fromOffsets: JMap[TopicAndPartition, JLong]
+    ): JavaInputDStream[RawMsgMeta] = {
+
+    if (!fromOffsets.isEmpty) {
+      import scala.collection.JavaConversions._
+      val topicsFromOffsets = fromOffsets.keySet().map(_.topic)
+      if (topicsFromOffsets != topics.toSet) {
+        throw new IllegalStateException(s"The specified topics: ${topics.toSet.mkString(" ")} " +
+          s"do not equal to the topic from offsets: ${topicsFromOffsets.mkString(" ")}")
+      }
+    }
+
+    val messageHandler = new JFunction[RawMsgMeta, RawMsgMeta] {
+        def call(msgMeta: RawMsgMeta): RawMsgMeta = msgMeta
+    }
+    if (fromOffsets.isEmpty) {
+      KafkaUtils.createDirectStream[Array[Byte], Array[Byte], DefaultDecoder, DefaultDecoder, RawMsgMeta](
+        jssc,
+        classOf[Array[Byte]],
+        classOf[Array[Byte]],
+        classOf[DefaultDecoder],
+        classOf[DefaultDecoder],
+        classOf[RawMsgMeta],
+        kafkaParams,
+        topics,
+        messageHandler) : JavaInputDStream[RawMsgMeta] 
+    } else {
+      val jstream = KafkaUtils.createDirectStream[
+        Array[Byte],
+        Array[Byte],
+        DefaultDecoder,
+        DefaultDecoder,
+        RawMsgMeta](
+          jssc,
+          classOf[Array[Byte]],
+          classOf[Array[Byte]],
+          classOf[DefaultDecoder],
+          classOf[DefaultDecoder],
+          classOf[RawMsgMeta],
+          kafkaParams,
+          fromOffsets,
+          messageHandler)
+      new JavaInputDStream(jstream.inputDStream)
+    }
+  }
+
+
   def createDirectStream(
       jssc: JavaStreamingContext,
       kafkaParams: JMap[String, String],

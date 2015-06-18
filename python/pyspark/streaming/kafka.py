@@ -33,6 +33,16 @@ def utf8_decoder(s):
 
 _MessageAndMetadata = namedtuple("MessageAndMetadata", ["key", "value", "topic", "partition", "offset"])
 
+class JFunction(object):
+    def __init__(self, f):
+        self._f = f
+
+    def call(self, v):
+        return self._f(v)
+
+    class Java:
+        implements = ['org.apache.spark.api.java.function.Function']
+
 class KafkaUtils(object):
 
     @staticmethod
@@ -127,6 +137,101 @@ class KafkaUtils(object):
         ser = PairDeserializer(NoOpSerializer(), NoOpSerializer())
         stream = DStream(jstream, ssc, ser)
         return stream.map(lambda k_v: (keyDecoder(k_v[0]), valueDecoder(k_v[1])))
+
+    @staticmethod
+    def createDirectStreamMM(ssc, topics, kafkaParams, fromOffsets={},
+                           keyDecoder=utf8_decoder, valueDecoder=utf8_decoder):
+        """
+        FIXME: temporary working placeholder
+        """
+        if not isinstance(topics, list):
+            raise TypeError("topics should be list")
+        if not isinstance(kafkaParams, dict):
+            raise TypeError("kafkaParams should be dict")
+
+        try:
+            helperClass = ssc._jvm.java.lang.Thread.currentThread().getContextClassLoader() \
+                .loadClass("org.apache.spark.streaming.kafka.KafkaUtilsPythonHelper")
+            helper = helperClass.newInstance()
+
+            jfromOffsets = dict([(k._jTopicAndPartition(helper),
+                                  v) for (k, v) in fromOffsets.items()])
+            jstream = helper.createDirectStreamMM(ssc._jssc, kafkaParams, set(topics), jfromOffsets)
+        except Py4JJavaError as e:
+            if 'ClassNotFoundException' in str(e.java_exception):
+                KafkaUtils._printErrorMsg(ssc.sparkContext)
+            raise e
+
+        ser = NoOpSerializer()
+        stream = DStream(jstream, ssc, ser)
+        return stream
+        # return stream.map(lambda k_v: (keyDecoder(k_v[0]), valueDecoder(k_v[1])))
+
+    @staticmethod
+    def createDirectStreamF(ssc, topics, kafkaParams, fromOffsets={},
+                            messageHandler=None, 
+                           keyDecoder=utf8_decoder, valueDecoder=utf8_decoder):
+        """
+        FIXME: temporary working placeholder
+
+         def createDirectStreamF[R](
+            jssc: JavaStreamingContext,
+            resultClass : Class[R], 
+            kafkaParams: JMap[String, String],
+            topics: JSet[String],
+            fromOffsets: JMap[TopicAndPartition, JLong], 
+            messageHandler :  JFunction[MessageAndMetadata[Array[Byte], Array[Byte]],R] 
+            ): JavaInputDStream[R] = {
+        """
+        if not isinstance(topics, list):
+            raise TypeError("topics should be list")
+        if not isinstance(kafkaParams, dict):
+            raise TypeError("kafkaParams should be dict")
+
+        try:
+            helperClass = ssc._jvm.java.lang.Thread.currentThread().getContextClassLoader() \
+                .loadClass("org.apache.spark.streaming.kafka.KafkaUtilsPythonHelper")
+            helper = helperClass.newInstance()
+
+            jfromOffsets = dict([(k._jTopicAndPartition(helper),
+                                  v) for (k, v) in fromOffsets.items()])
+            messageAndMetadataClass = ssc._jvm.java.lang.Thread.currentThread().getContextClassLoader() \
+                .loadClass("kafka.message.MessageAndMetadata")
+            jfunctionClass = ssc._jvm.java.lang.Thread.currentThread().getContextClassLoader() \
+                .loadClass("org.apache.spark.api.java.function.Function")
+            pyJFun = JFunction(lambda x : x)
+            # Returning always MessageAndMetadata in this example
+            jstream = helper.createDirectStreamF(ssc._jssc, messageAndMetadataClass, kafkaParams, set(topics), jfromOffsets, pyJFun)
+        except Py4JJavaError as e:
+            if 'ClassNotFoundException' in str(e.java_exception):
+                KafkaUtils._printErrorMsg(ssc.sparkContext)
+            raise e
+
+        # we need to use a Deserializer for entries ((key, message), (topic, (partition, offset)))
+        ser = PairDeserializer(PairDeserializer(NoOpSerializer(), NoOpSerializer()),\
+                               PairDeserializer(NoOpSerializer(), \
+                                                PairDeserializer(NoOpSerializer(), NoOpSerializer()) 
+                                                ) 
+                               )
+        stream = DStream(jstream, ssc, ser)
+        def getMetadataAndDecode(jmsgAndMetadata):
+            # Note hardcoding class name as this is @staticmethod
+            # and not @classmethod
+            return _MessageAndMetadata(
+                    key = keyDecoder(jmsgAndMetadata[0][0]),
+                    value = valueDecoder(jmsgAndMetadata[0][1]),
+                    topic = utf8_decoder(jmsgAndMetadata[1][0]),
+                    partition = int(utf8_decoder(jmsgAndMetadata[1][1][0])), 
+                    offset = long(utf8_decoder(jmsgAndMetadata[1][1][1]))
+                   )
+            '''
+            return {"key" : keyDecoder(jmsgAndMetadata[0][0]),\
+                    "value" : valueDecoder(jmsgAndMetadata[0][1]),\
+                    "topic" : utf8_decoder(jmsgAndMetadata[1][0]), \
+                    "partition" : int(utf8_decoder(jmsgAndMetadata[1][1][0])), \
+                    "offset" : long(utf8_decoder(jmsgAndMetadata[1][1][1]))}            
+            '''
+        return stream.map(getMetadataAndDecode)
 
     @staticmethod
     def createDirectStreamJ(ssc, topics, kafkaParams, fromOffsets={},
