@@ -772,7 +772,8 @@ private class KafkaUtilsPythonHelper {
           kafkaParams,
           fromOffsets,
           messageHandler)
-      new JavaInputDStream(jstream.inputDStream)
+      // new JavaInputDStream(jstream.inputDStream)
+      jstream
     }
   }
 

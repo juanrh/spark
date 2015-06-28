@@ -234,6 +234,66 @@ class KafkaUtils(object):
         return stream.map(getMetadataAndDecode)
 
     @staticmethod
+    def getOffsetRanges(rdd):
+        scalaRdd = rdd._jrdd.rdd()
+        offsetRangesArray = scalaRdd.offsetRanges()
+        return [ OffsetRange(topic = offsetRange.topic(),
+                             partition = offsetRange.partition(), 
+                             fromOffset = offsetRange.fromOffset(), 
+                             untilOffset = offsetRange.untilOffset())
+                    for offsetRange in offsetRangesArray]
+    @staticmethod
+    def createDirectStreamJB(ssc, topics, kafkaParams, fromOffsets={},
+                           keyDecoder=utf8_decoder, valueDecoder=utf8_decoder, offsetRangeForeach=None, addOffsetRange=False):
+        """
+        FIXME: temporary working placeholder
+        :param offsetRangeForeach: if different to None, this function should be a function from a list of OffsetRange to None, and is applied to the OffsetRange
+            list of each rdd
+        :param addOffsetRange: if False (default) output records are of the shape (kafkaKey, kafkaValue); if True output records are of the shape (offsetRange, (kafkaKey, kafkaValue)) for offsetRange the OffsetRange value for the Spark partition for the record
+
+        """
+        if not isinstance(topics, list):
+            raise TypeError("topics should be list")
+        if not isinstance(kafkaParams, dict):
+            raise TypeError("kafkaParams should be dict")
+
+        try:
+            helperClass = ssc._jvm.java.lang.Thread.currentThread().getContextClassLoader() \
+                .loadClass("org.apache.spark.streaming.kafka.KafkaUtilsPythonHelper")
+            helper = helperClass.newInstance()
+
+            jfromOffsets = dict([(k._jTopicAndPartition(helper),
+                                  v) for (k, v) in fromOffsets.items()])
+            jstream = helper.createDirectStream(ssc._jssc, kafkaParams, set(topics), jfromOffsets)
+        except Py4JJavaError as e:
+            if 'ClassNotFoundException' in str(e.java_exception):
+                KafkaUtils._printErrorMsg(ssc.sparkContext)
+            raise e
+
+        # (kafkaKey, kafkaValue)
+        ser = PairDeserializer(NoOpSerializer(), NoOpSerializer())  
+        stream = DStream(jstream, ssc, ser)
+        def do_transform(rdd):
+            '''
+            use if (offsetRangeForeach is not None) or addOffsetRange
+            '''
+            def decode(records):
+                return ( (keyDecoder(k), valueDecoder(v))  for (k, v) in records )
+
+            def decodeWithOffsetRange(offsetRangesList, sparkPartition, records):
+                return ((offsetRangesList[sparkPartition], (keyDecoder(k), valueDecoder(v))) 
+                          for (k,v) in records)
+
+            offsetRangesList = KafkaUtils.getOffsetRanges(rdd)
+            if offsetRangeForeach is not None:
+                offsetRangeForeach(offsetRangesList)
+
+            return rdd.mapPartitionsWithIndex(lambda partitionIdx, records: decodeWithOffsetRange(offsetRangesList, partitionIdx, records) ) if addOffsetRange\
+                   else rdd.map(decode)
+
+        return stream.transform(do_transform)
+
+    @staticmethod
     def createDirectStreamJ(ssc, topics, kafkaParams, fromOffsets={},
                            keyDecoder=utf8_decoder, valueDecoder=utf8_decoder):
         """
@@ -281,7 +341,41 @@ class KafkaUtils(object):
                     "partition" : int(utf8_decoder(jmsgAndMetadata[1][1][0])), \
                     "offset" : long(utf8_decoder(jmsgAndMetadata[1][1][1]))}            
             '''
-        return stream.map(getMetadataAndDecode)
+
+        def printOffsets(rdd):
+            scalaRdd = rdd._jrdd.rdd()
+            # type(offsetRangesArray): <class 'py4j.java_collections.JavaArray'> 
+            offsetRangesArray = scalaRdd.offsetRanges()
+            print 
+            print 
+            # FIXME: test without extra java-style getters from OffsetRange
+            # TODO: create named tuple and add to dict
+            for partition, offsetRange in enumerate(offsetRangesArray):
+              print 'offset for RDD partition', partition
+              print '\tfromOffset', offsetRange.fromOffset()
+              print '\tuntilOffset', offsetRange.untilOffset()
+              print '\tKafka partition', offsetRange.partition()
+              print '\ttopic', offsetRange.topic()
+            print 
+            print
+
+        def getMetadataAndOffsetsAndDecode(rdd):
+            offsetRangesList = KafkaUtils.getOffsetRanges(rdd)
+            decodedRDDWithMetadata = rdd.map(getMetadataAndDecode)
+            decodedRDDWithMetadata.__dict__["offsetRanges"] = offsetRangesList
+            return decodedRDDWithMetadata
+
+        # stream.foreachRDD(printOffsets)
+        # return stream.map(getMetadataAndDecode)
+        retStream = stream.transform(getMetadataAndOffsetsAndDecode)
+        def p(rdd):
+            print
+            print 
+            print "offsetRanges internal", rdd.__dict__.get("offsetRanges")
+            print
+
+        retStream.foreachRDD(p)
+        return retStream
 
     @staticmethod
     def createRDD(sc, kafkaParams, offsetRanges, leaders={},
@@ -362,6 +456,9 @@ class OffsetRange(object):
         self._partition = partition
         self._fromOffset = fromOffset
         self._untilOffset = untilOffset
+
+    def __str__(self):
+        return "OffsetRange(topic={topic}, partition={partition}, fromOffset={fromOffset}, untilOffset={untilOffset})".format(topic=self._topic, partition=self._partition, fromOffset=self._fromOffset, untilOffset=self._untilOffset)
 
     def _jOffsetRange(self, helper):
         return helper.createOffsetRange(self._topic, self._partition, self._fromOffset,
